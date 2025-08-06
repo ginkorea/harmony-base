@@ -1,0 +1,7 @@
+# .gitignore
+models/
+logs/
+__pycache__/
+*.pyc
+.env
+*.tar.gz

@@ -1,0 +1,38 @@
+name: harmony-base
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.10
+  - pip
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+  - rust
+  - pip:
+      - transformers
+      - accelerate
+      - triton==3.1.0
+      - openai-harmony==0.0.3
+      - sentencepiece
+      - huggingface-hub
+      - opencv-python
+      - segment-geospatial
+      - geopandas
+      - rasterio
+      - fiona
+      - whisper
+      - flask
+      - flask-cors
+      - flask-socketio
+      - flask-compress
+      - pydantic
+      - python-dotenv
+      - orjson
+      - tqdm
+      - numpy
+      - scipy
+      - typer
+      - sse-starlette
