@@ -1,38 +1,34 @@
 name: harmony-base
 channels:
+  - conda-forge
   - pytorch
   - nvidia
-  - conda-forge
+  - defaults
 dependencies:
   - python=3.10
   - pip
-  - pytorch
-  - torchvision
-  - torchaudio
-  - pytorch-cuda=12.1
-  - rust
+  - uvicorn
+  - fastapi
+  - pydantic
+  - pydantic-settings
+  - sqlalchemy
+  - alembic
+  - python-multipart
+  - flask
+  - git
+  - numpy
+  - scipy
+  # GPU Toolchain from conda (install in step B)
   - pip:
+      # Hugging Face & extras
+      - huggingface-hub
       - transformers
       - accelerate
-      - triton==3.1.0
-      - openai-harmony==0.0.3
-      - sentencepiece
-      - huggingface-hub
-      - opencv-python
-      - segment-geospatial
-      - geopandas
-      - rasterio
-      - fiona
-      - whisper
-      - flask
-      - flask-cors
-      - flask-socketio
-      - flask-compress
-      - pydantic
-      - python-dotenv
-      - orjson
-      - tqdm
-      - numpy
-      - scipy
-      - typer
-      - sse-starlette
+      # App-specific deps
+      - passlib[argon2]
+      - python-jose[cryptography]
+      - cryptography
+      # (Optional — skip for now if you don't need it)
+      # - triton
+      # - kernels
+      # - git+https://github.com/triton-lang/triton.git@main#subdirectory=python/triton_kernels

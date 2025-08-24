@@ -1,7 +1,8 @@
 import os
 import argparse
 import logging
-from huggingface_hub import snapshot_download
+from tqdm import tqdm
+from huggingface_hub import hf_hub_download, list_repo_files
 
 # === Logging Setup ===
 os.makedirs("logs", exist_ok=True)
@@ -14,11 +15,17 @@ logging.basicConfig(
 def download_model(model_repo: str, local_dir: str):
     print(f"📥 Downloading {model_repo} to {local_dir}")
     try:
-        snapshot_download(
-            repo_id=model_repo,
-            local_dir=local_dir,
-            force_download=False,
-        )
+        files = list_repo_files(model_repo)
+        os.makedirs(local_dir, exist_ok=True)
+
+        for file in tqdm(files, desc="📦 Downloading files", unit="file"):
+            hf_hub_download(
+                repo_id=model_repo,
+                filename=file,
+                local_dir=local_dir,
+                force_download=False
+            )
+
         print("✅ Download complete.")
         logging.info(f"Model {model_repo} successfully downloaded to {local_dir}")
     except Exception as e:
@@ -43,4 +50,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

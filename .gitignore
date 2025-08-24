@@ -1,6 +1,7 @@
 # .gitignore
 models/
 logs/
+deps/
 __pycache__/
 *.pyc
 .env
