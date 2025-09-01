@@ -1,3 +1,5 @@
+# app/config.py
+
 from pydantic_settings import BaseSettings
 from pydantic import Field
 from typing import List
@@ -23,6 +25,12 @@ class Settings(BaseSettings):
 
     # password reset token validity (minutes)
     RESET_TOKEN_MINUTES: int = 30
+
+    # llama-server config -- adjust as needed
+    LLAMA_SERVER_URL: str = "http://127.0.0.1:8080" # change for production
+    LLAMA_MODEL: str = "llama"  # set to your served model name
+    LLAMA_API_KEY: str = ""  # if llama-server requires it; else leave blank
+    LLAMA_TIMEOUT: float = 60.0
 
     def parse_origins(self, v):
         if isinstance(v, list): return v

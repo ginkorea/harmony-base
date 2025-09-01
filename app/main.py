@@ -1,45 +1,54 @@
+# app/main.py
+
 from fastapi import FastAPI, Depends, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse
 from pathlib import Path
-import asyncio
 
 from .config import settings
 from .db import Base, engine
 from .routers import uploads, chats, auth
 from .routers.auth import get_current_user, AuthUser
+from .routers import generate  # /api/models, /api/generate
+
+# ---- FIX: import the registry (supports either app.llm.registry or app.registry)
+try:
+    from .llm.registry import registry
+except ImportError:
+    from .registry import registry  # fallback if your layout is app/registry.py
 
 # --- DB init ---
 Base.metadata.create_all(engine)
 
-app = FastAPI(title="Pastebox")
+app = FastAPI(title="WarriorGPT")
 
 # --- CORS ---
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS,
+    allow_origins=getattr(settings, "CORS_ORIGINS", ["*"]),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --- Routers ---
+# Routers
 app.include_router(auth.router)     # /auth/*
 app.include_router(uploads.router)  # /files/*
 app.include_router(chats.router)    # /chat/*
+app.include_router(generate.router) # /api/models, /api/generate (proxy via registry)
 
 # --- Static & index ---
 STATIC_DIR = Path(__file__).resolve().parent.parent / "static"
 if STATIC_DIR.exists():
-    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+    app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/")
 def root():
     index = STATIC_DIR / "index.html"
     if index.exists():
         return FileResponse(index)
-    return {"ok": True, "hint": "Place your UI at harmony-base/static/index.html or open /static/index.html"}
+    return {"ok": True, "hint": "Place your UI at static/index.html or open /static/index.html"}
 
 @app.get("/favicon.ico")
 def favicon():
@@ -58,16 +67,13 @@ def health():
 def me(user: AuthUser = Depends(get_current_user)):
     return {"user": user}
 
-# --- Mock generator for UI streaming test ---
-# Replace with your real LLM call later.
-@app.post("/api/generate")
-async def generate(payload: dict, user: AuthUser = Depends(get_current_user)):
-    prompt = (payload or {}).get("prompt", "")
-    _attachments = (payload or {}).get("attachments", [])
+# --- Lifecycle: load models.yaml, start/stop runtimes/providers ---
+@app.on_event("startup")
+async def _startup():
+    # Load model registry (models.yaml at repo root)
+    registry.load("models.yaml")
+    await registry.startup()
 
-    async def streamer():
-        text = f"Echo: {prompt} "
-        for ch in text:
-            yield ch
-            await asyncio.sleep(0.02)
-    return StreamingResponse(streamer(), media_type="text/plain")
+@app.on_event("shutdown")
+async def _shutdown():
+    await registry.shutdown()

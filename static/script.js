@@ -1,16 +1,18 @@
+// script.js — WarriorGPT model-agnostic UI
+
 // --- tiny helpers ---
 const $ = (q) => document.querySelector(q);
 const show = (el, on = true) => el && (el.style.display = on ? "" : "none");
 const setText = (el, txt) => el && (el.textContent = txt ?? "");
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
-// UI elems
 const authSection = $("#authSection");
 const chatSection = $("#chatSection");
 const whoami = $("#whoami");
 const logoutBtn = $("#logoutBtn");
 const authOut = $("#authOut");
+const modelSelect = $("#modelSelect");
 
-// tabs (if present in your HTML)
 const tabLogin = $("#tabLogin");
 const tabRegister = $("#tabRegister");
 const tabReset = $("#tabReset");
@@ -18,402 +20,278 @@ const loginForm = $("#loginForm");
 const registerForm = $("#registerForm");
 const resetForm = $("#resetForm");
 
-// auth forms
 const loginEmail = $("#loginEmail");
 const loginPassword = $("#loginPassword");
 const regEmail = $("#regEmail");
 const regPassword = $("#regPassword");
-
 const resetEmail = $("#resetEmail");
 const resetToken = $("#resetToken");
 const newPassword = $("#newPassword");
 
-// chat elems
 const chatBox = $("#chat-box");
+const spinner = $("#spinner");
+const dz = $("#dz");           // paste/drop zone for content, not required to send
+const thumbs = $("#thumbs");
+const out = $("#out");
 const userInput = $("#user-input");
 const sendBtn = $("#send-button");
-const out = $("#out");
-const spinner = $("#spinner");
-
-const dz = $("#dz");
-const thumbs = $("#thumbs");
 const listBtn = $("#list");
 const clearThumbsBtn = $("#clearThumbs");
+const systemPrompt = $("#systemPrompt");
 
-// state
-let currentUser = null;
-let pendingFiles = []; // local (unsent) files
+// session-local preview cache
+let localThumbs = []; // [{id,name,url,isImage}]
+let streaming = false;
 
-// ---- view switching ----
-function setAuthed(user) {
-  currentUser = user;
-  document.title = user ? "WarriorChat — Chat" : "WarriorChat — Sign in to start chatting";
-
-  if (user) {
-    setText(whoami, `${user.email}`);
+// --- auth state dance ---
+async function me() {
+  try {
+    const r = await fetch("/me");
+    if (!r.ok) throw 0;
+    const j = await r.json();
+    return j.user || null;
+  } catch { return null; }
+}
+function setAuthed(u) {
+  if (u) {
+    setText(whoami, u.email || u.display_name || "Signed in");
     show(logoutBtn, true);
+    show(modelSelect, true);
     show(authSection, false);
     show(chatSection, true);
-    userInput?.focus();
   } else {
     setText(whoami, "Not signed in");
     show(logoutBtn, false);
+    show(modelSelect, false);
     show(chatSection, false);
     show(authSection, true);
-    selectTab("login");
   }
 }
 
-function selectTab(which) {
-  // button styles
-  tabLogin?.classList.toggle("primary", which === "login");
-  tabRegister?.classList.toggle("primary", which === "register");
-  tabReset?.classList.toggle("primary", which === "reset");
-  // panes
-  show(loginForm, which === "login");
-  show(registerForm, which === "register");
-  show(resetForm, which === "reset");
-  // clear messages
-  setText(authOut, "");
-}
+// --- tabs ---
+tabLogin.onclick = () => {
+  show(loginForm, true); show(registerForm, false); show(resetForm, false);
+  tabLogin.classList.add("primary"); tabRegister.classList.remove("primary"); tabReset.classList.remove("primary");
+};
+tabRegister.onclick = () => {
+  show(loginForm, false); show(registerForm, true); show(resetForm, false);
+  tabLogin.classList.remove("primary"); tabRegister.classList.add("primary"); tabReset.classList.remove("primary");
+};
+tabReset.onclick = () => {
+  show(loginForm, false); show(registerForm, false); show(resetForm, true);
+  tabLogin.classList.remove("primary"); tabRegister.classList.remove("primary"); tabReset.classList.add("primary");
+};
 
-tabLogin?.addEventListener("click", () => selectTab("login"));
-tabRegister?.addEventListener("click", () => selectTab("register"));
-tabReset?.addEventListener("click", () => selectTab("reset"));
+// --- auth actions ---
+$("#loginBtn").onclick = async () => {
+  authOut.textContent = "";
+  const fd = new FormData();
+  // FastAPI OAuth2 style expects "username"/"password"
+  fd.append("username", loginEmail.value.trim());
+  fd.append("password", loginPassword.value);
+  const r = await fetch("/auth/login", { method: "POST", body: fd });
+  authOut.textContent = (await r.text());
+  setTimeout(init, 150);
+};
+$("#registerBtn").onclick = async () => {
+  authOut.textContent = "";
+  const b = { email: regEmail.value.trim(), password: regPassword.value };
+  const r = await fetch("/auth/register", { method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(b) });
+  authOut.textContent = (await r.text());
+};
+$("#requestResetBtn").onclick = async () => {
+  const r = await fetch("/auth/request_password_reset", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ email: resetEmail.value.trim() })
+  });
+  authOut.textContent = (await r.text());
+};
+$("#doResetBtn").onclick = async () => {
+  const r = await fetch("/auth/reset_password", {
+    method: "POST", headers: {"Content-Type":"application/json"},
+    body: JSON.stringify({ token: resetToken.value.trim(), new_password: newPassword.value })
+  });
+  authOut.textContent = (await r.text());
+};
+logoutBtn.onclick = async () => {
+  await fetch("/auth/logout", {method:"POST"});
+  await init();
+};
 
-// ---- auth api ----
-async function fetchMe() {
+// --- models ---
+async function loadModels() {
+  // If you add a /models endpoint later, we’ll populate from it.
+  // Fallback stays usable today with a single default value.
+  modelSelect.innerHTML = `<option value="scout17b">Llama 4 Scout 17B (Q4_K)</option>`;
   try {
-    const r = await fetch("/me", { credentials: "include" });
-    if (!r.ok) throw 0;
-    const j = await r.json();
-    return j.user;
-  } catch {
-    return null;
-  }
+    const r = await fetch("/models");
+    if (!r.ok) return; // endpoint not present is fine
+    const j = await r.json(); // expect [{name, display_name}]
+    if (Array.isArray(j) && j.length) {
+      modelSelect.innerHTML = "";
+      for (const m of j) {
+        const opt = document.createElement("option");
+        opt.value = m.name;
+        opt.textContent = m.display_name || m.name;
+        modelSelect.appendChild(opt);
+      }
+    }
+  } catch {}
 }
 
-async function register() {
-  setText(authOut, "Creating account…");
-  try {
-    const r = await fetch("/auth/register", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: regEmail.value.trim(), password: regPassword.value }),
-      credentials: "include",
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || "Registration failed");
-    setText(authOut, "Account created. You can now sign in.");
-    selectTab("login");
-    loginEmail.value = regEmail.value.trim();
-  } catch (e) {
-    setText(authOut, String(e.message || e));
-  }
-}
-
-async function login() {
-  setText(authOut, "Signing in…");
-  try {
-    // FastAPI OAuth2PasswordRequestForm expects x-www-form-urlencoded with username,password
-    const body = new URLSearchParams();
-    body.set("username", loginEmail.value.trim());
-    body.set("password", loginPassword.value);
-
-    const r = await fetch("/auth/login", {
-      method: "POST",
-      headers: { "content-type": "application/x-www-form-urlencoded" },
-      body,
-      credentials: "include",
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || "Invalid credentials");
-    setText(authOut, "");
-    const u = await fetchMe();
-    setAuthed(u);
-  } catch (e) {
-    setText(authOut, String(e.message || e));
-  }
-}
-
-async function logout() {
-  await fetch("/auth/logout", { method: "POST", credentials: "include" });
-  setAuthed(null);
-  // clear chat UI
-  chatBox.innerHTML = "";
-  out.textContent = "";
-  thumbs.innerHTML = "";
-  dz && (dz.innerHTML = "");
-  pendingFiles = [];
-}
-
-// Password reset
-async function requestReset() {
-  setText(authOut, "Requesting reset token…");
-  try {
-    const r = await fetch("/auth/request_password_reset", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ email: resetEmail.value.trim() }),
-      credentials: "include",
-    });
-    const j = await r.json();
-    // In dev, backend may include token; in prod you’d email it.
-    setText(authOut, j.reset_token ? `Token (dev only): ${j.reset_token}` : "If that account exists, a reset email was sent.");
-  } catch {
-    setText(authOut, "Reset request failed.");
-  }
-}
-
-async function doReset() {
-  setText(authOut, "Resetting password…");
-  try {
-    const r = await fetch("/auth/reset_password", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ token: resetToken.value.trim(), new_password: newPassword.value }),
-      credentials: "include",
-    });
-    const j = await r.json();
-    if (!r.ok) throw new Error(j.detail || "Reset failed");
-    setText(authOut, "Password reset. You can log in now.");
-    selectTab("login");
-  } catch (e) {
-    setText(authOut, String(e.message || e));
-  }
-}
-
-// wire auth buttons
-$("#registerBtn")?.addEventListener("click", register);
-$("#loginBtn")?.addEventListener("click", login);
-logoutBtn?.addEventListener("click", logout);
-$("#requestResetBtn")?.addEventListener("click", requestReset);
-$("#doResetBtn")?.addEventListener("click", doReset);
-
-// ---- chat rendering ----
-function appendMsg(role, text) {
-  const wrap = document.createElement("div");
-  wrap.className = "msg-block";
+// --- chat helpers ---
+function addMsg(role, text) {
+  const block = document.createElement("div");
+  block.className = "msg-block";
   const label = document.createElement("span");
   label.className = role === "user" ? "user-label" : "bot-label";
-  label.textContent = role === "user" ? "You:" : "Bot:";
+  label.textContent = role === "user" ? "You: " : "Bot: ";
   const msg = document.createElement("span");
   msg.className = role === "user" ? "user-msg" : "bot-msg";
   msg.textContent = text;
-  wrap.appendChild(label);
-  wrap.appendChild(msg);
-  chatBox.appendChild(wrap);
+  block.appendChild(label);
+  block.appendChild(msg);
+  chatBox.appendChild(block);
   chatBox.scrollTop = chatBox.scrollHeight;
 }
+function setSpinner(on) { show(spinner, on); }
+function clearOutput() { out.textContent = ""; }
 
-// ---- attachments UI (thumbs/chips with remove) ----
-function addThumb({ url, fileName, localIndex = null, fileId = null }) {
-  const wrap = document.createElement("div");
-  wrap.className = "thumb";
+async function streamGenerate(prompt) {
+  const model = modelSelect.value || "scout17b";
+  const system = (systemPrompt && systemPrompt.value.trim()) || null;
 
-  if (url) {
-    const img = new Image();
-    img.src = url;
-    img.loading = "lazy";
-    img.onload = () => URL.revokeObjectURL(img.src);
-    wrap.appendChild(img);
-  } else {
-    const chip = document.createElement("div");
-    chip.className = "file";
-    chip.textContent = fileName || "file";
-    wrap.appendChild(chip);
-  }
-
-  const x = document.createElement("button");
-  x.type = "button";
-  x.className = "remove";
-  x.textContent = "×";
-  wrap.appendChild(x);
-
-  if (localIndex !== null) wrap.dataset.localIndex = String(localIndex);
-  if (fileId) wrap.dataset.fileId = fileId;
-
-  thumbs.appendChild(wrap);
-}
-
-// Remove a local (unsent) file by index, keeping indices consistent
-function rebuildLocalThumbs() {
-  thumbs.innerHTML = "";
-  pendingFiles.forEach((f, i) => {
-    if (f.type?.startsWith?.("image/")) addThumb({ url: URL.createObjectURL(f), localIndex: i });
-    else addThumb({ fileName: f.name, localIndex: i });
-  });
-}
-function removeLocal(index) {
-  pendingFiles.splice(index, 1);
-  rebuildLocalThumbs();
-}
-
-// Event delegation for the little × on each thumb
-thumbs?.addEventListener("click", async (e) => {
-  const btn = e.target.closest(".remove");
-  if (!btn) return;
-  const card = btn.closest(".thumb");
-  if (!card) return;
-
-  // Local pending file?
-  if (card.dataset.localIndex !== undefined) {
-    removeLocal(Number(card.dataset.localIndex));
-    return;
-  }
-
-  // Already uploaded? Delete from session
-  const fileId = card.dataset.fileId;
-  if (fileId) {
-    try {
-      await fetch(`/files/session/${fileId}`, { method: "DELETE", credentials: "include" });
-      card.remove();
-    } catch {
-      out.textContent = "Failed to delete file from session.";
-    }
-  }
-});
-
-// ---- paste / drop handlers ----
-dz?.addEventListener("paste", (e) => {
-  const items = [...(e.clipboardData?.items || [])];
-  const files = items.map((it) => (it.kind === "file" ? it.getAsFile() : null)).filter(Boolean);
-
-  if (files.length) {
-    e.preventDefault(); // stop inline paste
-    dz.innerHTML = "";
-    files.forEach((f) => {
-      const idx = pendingFiles.push(f) - 1; // capture index
-      if (f.type.startsWith("image/")) addThumb({ url: URL.createObjectURL(f), localIndex: idx });
-      else addThumb({ fileName: f.name, localIndex: idx });
-    });
-    return;
-  }
-
-  // allow plain text, strip formatting
-  const text = e.clipboardData.getData("text/plain");
-  if (text) {
-    e.preventDefault();
-    document.execCommand("insertText", false, text);
-  }
-});
-
-dz?.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dz.classList.add("focus");
-});
-dz?.addEventListener("dragleave", () => dz.classList.remove("focus"));
-dz?.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dz.classList.remove("focus");
-  const files = [...(e.dataTransfer?.files || [])];
-  if (!files.length) return;
-
-  dz.innerHTML = "";
-  files.forEach((f) => {
-    const idx = pendingFiles.push(f) - 1;
-    if (f.type.startsWith("image/")) addThumb({ url: URL.createObjectURL(f), localIndex: idx });
-    else addThumb({ fileName: f.name, localIndex: idx });
-  });
-});
-
-// ---- send: upload + message, then clear tray ----
-async function send() {
-  const prompt = userInput.value.trim();
-  if (!prompt && !pendingFiles.length) return;
-
-  if (prompt) appendMsg("user", prompt);
-  userInput.value = "";
-
-  // Upload pending files first (if any)
-  let attachmentsMeta = [];
-  if (pendingFiles.length) {
-    const form = new FormData();
-    pendingFiles.forEach((f) => form.append("files", f, f.name || "attachment"));
-    form.append("message", prompt || "");
-
-    try {
-      const r = await fetch("/files/upload", { method: "POST", body: form, credentials: "include" });
-      const j = await r.json();
-      if (r.ok && j.ok) attachmentsMeta = j.files || [];
-      else out.textContent = JSON.stringify(j, null, 2);
-    } catch {
-      out.textContent = "Upload failed.";
-    }
-  }
-
-  // Now ask the model
-  show(spinner, true);
-  appendMsg("bot", "");
-  const last = chatBox.lastChild.querySelector(".bot-msg");
+  setSpinner(true);
+  streaming = true;
+  addMsg("user", prompt);
+  addMsg("bot", ""); // create an empty bot block we will fill:
+  const botSpan = chatBox.lastChild.querySelector(".bot-msg");
 
   try {
-    const r = await fetch("/api/generate", {
+    const r = await fetch(`/api/generate?model=${encodeURIComponent(model)}`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ prompt, attachments: attachmentsMeta }),
-      credentials: "include",
+      headers: {"Content-Type":"application/json"},
+      body: JSON.stringify({
+        prompt,
+        system,
+        llm_params: {} // extend with UI dials later (temperature, max_tokens, etc.)
+      })
     });
-
     if (!r.ok || !r.body) {
-      last.textContent = "Error";
+      const t = await r.text();
+      botSpan.textContent = `Error: ${t || r.status}`;
       return;
     }
-
     const reader = r.body.getReader();
-    const decoder = new TextDecoder();
+    const dec = new TextDecoder();
     while (true) {
-      const { value, done } = await reader.read();
+      const {done, value} = await reader.read();
       if (done) break;
-      last.textContent += decoder.decode(value);
+      const chunk = dec.decode(value);
+      botSpan.textContent += chunk;
       chatBox.scrollTop = chatBox.scrollHeight;
     }
-  } catch {
-    last.textContent = "Error generating response.";
+  } catch (e) {
+    botSpan.textContent += `\n[Network error: ${e}]`;
   } finally {
-    show(spinner, false);
-    // Clear the tray after a full send cycle
-    pendingFiles = [];
-    thumbs.innerHTML = "";
-    dz && (dz.innerHTML = "");
+    setSpinner(false);
+    streaming = false;
   }
 }
 
-sendBtn?.addEventListener("click", send);
-userInput?.addEventListener("keydown", (e) => {
+// --- paste/drag uploads ---
+dz.addEventListener("paste", async (e) => {
+  const items = e.clipboardData?.items || [];
+  const files = [];
+  for (const it of items) {
+    if (it.kind === "file") {
+      const f = it.getAsFile();
+      if (f) files.push(f);
+    }
+  }
+  if (files.length) await uploadFiles(files);
+});
+
+dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.style.borderColor = "#08f"; });
+dz.addEventListener("dragleave", (e) => { dz.style.borderColor = "#2a2a2a"; });
+dz.addEventListener("drop", async (e) => {
+  e.preventDefault(); dz.style.borderColor = "#2a2a2a";
+  const files = Array.from(e.dataTransfer?.files || []);
+  if (files.length) await uploadFiles(files);
+});
+
+async function uploadFiles(files) {
+  const fd = new FormData();
+  for (const f of files) fd.append("files", f, f.name);
+  const r = await fetch("/files/upload", { method: "POST", body: fd });
+  const j = await r.json().catch(() => null);
+  // Expecting payload with file infos; fallback to show just names if unknown
+  if (j && Array.isArray(j.files)) {
+    for (const f of j.files) addThumb(f);
+  } else {
+    for (const f of files) addThumb({ id: `local:${Date.now()}-${f.name}`, name: f.name, url: "", is_image: f.type.startsWith("image/") });
+  }
+}
+
+function addThumb(f) {
+  const id = f.id || f.file_id || `local:${Math.random()}`;
+  const name = f.name || f.filename || "file";
+  const url = f.url || (f.is_image ? f.preview_url : "");
+  const isImage = !!(f.is_image || (url && !name.toLowerCase().endsWith(".pdf")));
+  localThumbs.push({ id, name, url, isImage });
+
+  const el = document.createElement("div");
+  el.className = "thumb";
+  el.dataset.id = id;
+
+  const btn = document.createElement("button");
+  btn.className = "remove";
+  btn.textContent = "×";
+  btn.title = "Remove";
+  btn.onclick = () => { thumbs.removeChild(el); localThumbs = localThumbs.filter(t => t.id !== id); };
+
+  el.appendChild(btn);
+
+  if (isImage && url) {
+    const img = document.createElement("img");
+    img.src = url;
+    el.appendChild(img);
+  } else {
+    const div = document.createElement("div");
+    div.className = "file";
+    div.textContent = name;
+    el.appendChild(div);
+  }
+  thumbs.appendChild(el);
+}
+
+listBtn.onclick = async () => {
+  const r = await fetch("/files/session");
+  out.textContent = await r.text();
+};
+clearThumbsBtn.onclick = () => {
+  thumbs.innerHTML = "";
+  localThumbs = [];
+};
+
+// --- send ---
+sendBtn.onclick = async () => {
+  const prompt = userInput.value.trim() || dz.textContent.trim();
+  if (!prompt || streaming) return;
+  userInput.value = "";
+  await streamGenerate(prompt);
+};
+userInput.addEventListener("keydown", async (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
-    send();
+    sendBtn.click();
   }
 });
 
-// “List” -> fetch current session files and render chips with delete buttons
-listBtn?.addEventListener("click", async () => {
-  out.textContent = "Loading session files…";
-  try {
-    const r = await fetch("/files/session", { credentials: "include" });
-    const j = await r.json();
-    out.textContent = ""; // show chips instead
-
-    thumbs.innerHTML = "";
-    (j.files || []).forEach((f) => {
-      // If you later expose a /files/download/{id} route, you can show real previews for images
-      addThumb({ fileName: f.name, fileId: f.id });
-    });
-  } catch {
-    out.textContent = "Failed to list session files.";
-  }
-});
-
-// “Clear” -> clears local pending (unsent) files only
-clearThumbsBtn?.addEventListener("click", () => {
-  pendingFiles = [];
-  thumbs.innerHTML = "";
-});
-
-// ---- boot ----
-(async function init() {
-  const user = await fetchMe();
-  setAuthed(user);
-  if (!user) show(authSection, true);
-})();
+// --- bootstrap ---
+async function init() {
+  const u = await me();
+  setAuthed(u);
+  if (u) await loadModels();
+}
+init();

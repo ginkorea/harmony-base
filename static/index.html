@@ -11,6 +11,10 @@
   <header class="topbar">
     <div class="title">WarriorGPT</div>
     <div id="authArea" class="muted">
+      <select id="modelSelect" title="Model" style="display:none; margin-right:10px;">
+        <!-- Populated by JS. Fallback defaults if /models isn’t available -->
+        <option value="scout17b">Llama 4 Scout 17B (Q4_K)</option>
+      </select>
       <span id="whoami">Not signed in</span>
       <button id="logoutBtn" type="button" style="display:none; margin-left:10px;">Logout</button>
     </div>
@@ -77,6 +81,7 @@
 
     <!-- Input -->
     <div class="input-container">
+      <textarea id="systemPrompt" class="dropzone" style="min-height:56px;" placeholder="Optional system instruction…"></textarea>
       <input type="text" id="user-input" placeholder="Type a message…" autocomplete="off" />
       <button id="send-button" class="primary">Send</button>
       <button id="list" type="button" title="List session attachments">List</button>
